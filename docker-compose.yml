@@ -1,0 +1,222 @@
+# version: '3.8'
+
+# services:
+#   # PostgreSQL Database
+#   database:
+#     image: postgres:15-alpine  # Keep existing version for compatibility
+#     container_name: task_manager_db
+#     restart: unless-stopped
+#     environment:
+#       POSTGRES_DB: microservices_db
+#       POSTGRES_USER: postgres
+#       # Use Docker secrets or env file for production
+#       POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+#     secrets:
+#       - db_password
+#     volumes:
+#       - postgres_data:/var/lib/postgresql/data
+#       # Mount with specific permissions
+#       - type: tmpfs
+#         target: /tmp
+#         tmpfs:
+#           size: 100M
+#     ports:
+#       - "127.0.0.1:5432:5432"  # Bind to localhost only
+#     networks:
+#       - task_manager_network
+#     healthcheck:
+#       test: ["CMD-SHELL", "pg_isready -U postgres"]
+#       interval: 10s
+#       timeout: 5s
+#       retries: 5
+#     # Security constraints
+#     security_opt:
+#       - no-new-privileges:true
+#     read_only: true
+#     tmpfs:
+#       - /tmp
+#       - /var/run/postgresql
+
+#   # Backend Service
+#   backend:
+#     build:
+#       context: ./backend
+#       dockerfile: Dockerfile
+#       target: production
+#     container_name: task_manager_backend
+#     restart: unless-stopped
+#     environment:
+#       - DATABASE_URL=postgresql://postgres:postgres@database:5432/microservices_db
+#       - FLASK_ENV=production
+#       - FLASK_DEBUG=false
+#     ports:
+#       - "127.0.0.1:5000:5000"  # Bind to localhost only
+#     depends_on:
+#       database:
+#         condition: service_healthy
+#     networks:
+#       - task_manager_network
+#     volumes:
+#       - ./backend:/app:ro  # Read-only mount
+#     healthcheck:
+#       test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5000/health')"]
+#       interval: 30s
+#       timeout: 10s
+#       retries: 3
+#       start_period: 40s
+#     # Security constraints
+#     security_opt:
+#       - no-new-privileges:true
+#     user: "1001:1001"  # Run as non-root user
+
+#   # Frontend Service
+#   frontend:
+#     build:
+#       context: ./frontend
+#       dockerfile: Dockerfile
+#       target: production
+#     container_name: task_manager_frontend
+#     restart: unless-stopped
+#     ports:
+#       - "80:80"
+#     depends_on:
+#       - backend
+#     networks:
+#       - task_manager_network
+#     environment:
+#       - REACT_APP_API_URL=http://localhost/api
+#     healthcheck:
+#       test: ["CMD", "curl", "-f", "http://localhost/"]
+#       interval: 30s
+#       timeout: 10s
+#       retries: 3
+#     # Security constraints
+#     security_opt:
+#       - no-new-privileges:true
+#     read_only: true
+#     tmpfs:
+#       - /tmp
+#       - /var/cache/nginx
+#       - /var/run
+
+# networks:
+#   task_manager_network:
+#     driver: bridge
+#     name: task_manager_network
+#     # Enable encryption for internal network traffic
+#     driver_opts:
+#       encrypted: "true"
+
+# volumes:
+#   postgres_data:
+#     driver: local
+#     name: task_manager_postgres_data
+
+# secrets:
+#   db_password:
+#     file: ./secrets/db_password.txt
+
+
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  database:
+    image: postgres:15-alpine  # Keep existing version for compatibility
+    container_name: task_manager_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: microservices_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - db_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 100M
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks:
+      - task_manager_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
+
+  # Backend Service
+  backend:
+    image: mohamedabdelfatah/task-manager-backend:latest
+    container_name: task_manager_backend
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@database:5432/microservices_db
+      - FLASK_ENV=production
+      - FLASK_DEBUG=false
+    ports:
+      - "127.0.0.1:5000:5000"
+    depends_on:
+      database:
+        condition: service_healthy
+    networks:
+      - task_manager_network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    security_opt:
+      - no-new-privileges:true
+    user: "1001:1001"
+
+  # Frontend Service
+  frontend:
+    image: mohamedabdelfatah/task-manager-frontend:latest
+    container_name: task_manager_frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - task_manager_network
+    environment:
+      - REACT_APP_API_URL=http://localhost/api
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+
+networks:
+  task_manager_network:
+    driver: bridge
+    name: task_manager_network
+    driver_opts:
+      encrypted: "true"
+
+volumes:
+  postgres_data:
+    driver: local
+    name: task_manager_postgres_data
+
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
