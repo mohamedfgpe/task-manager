@@ -10,6 +10,7 @@ variables:
   DOCKER_REGISTRY: docker.io
   FRONTEND_IMAGE: $DOCKER_USERNAME/task-manager-frontend:latest
   BACKEND_IMAGE: $DOCKER_USERNAME/task-manager-backend:latest
+  EC2_HOST: "13.60.60.57"
 
 build:
   stage: build
@@ -70,9 +71,18 @@ deploy:
     - echo "$EC2_PRIVATE_KEY" | tr -d '\r' | ssh-add -
     - mkdir -p ~/.ssh
     - ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts
+    - chmod 600 ~/.ssh/known_hosts
   script:
-    - ansible-playbook -i ansible/inventory ansible/playbook.yml --private-key "$EC2_PRIVATE_KEY"
+    - echo "$EC2_PRIVATE_KEY" > /tmp/ec2-key.pem
+    - chmod 600 /tmp/ec2-key.pem
+    - sed -i "s|ansible_ssh_private_key_file=.*|ansible_ssh_private_key_file=/tmp/ec2-key.pem|g" ansible/inventory
+    - ansible-playbook -i ansible/inventory ansible/site.yml -v
+  environment:
+    name: production
+    url: http://$EC2_HOST
   when: manual
+  only:
+    - main
 
 notify:
   stage: notify
@@ -80,6 +90,8 @@ notify:
   script:
     - >
       curl -X POST -H 'Content-type: application/json'
-      --data '{"text":"✅ Task Manager CI/CD pipeline completed successfully! 🚀"}'
+      --data '{"text":"✅ Task Manager CI/CD pipeline completed successfully! 🚀\nApplication deployed to: http://'"$EC2_HOST"'"}'
       $SLACK_WEBHOOK_URL
   when: on_success
+  only:
+    - main
