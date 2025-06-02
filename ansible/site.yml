@@ -1,39 +1,206 @@
+---
 - name: Complete Server Setup and App Deployment
   hosts: servers
   become: true
+  vars:
+    app_directory: /home/ubuntu/task-manager
+    docker_username: mohamedabdelfatah
+    
   tasks:
-
-    # ---------- Common ----------
-    - name: Update and upgrade apt packages
+    # ---------- System Updates ----------
+    - name: Update apt package index
       apt:
         update_cache: yes
+
+    - name: Upgrade all packages to the latest version
+      apt:
         upgrade: dist
+        autoremove: yes
+        autoclean: yes
 
-    # ---------- Docker ----------
-    - name: Install Docker
-      shell: curl -fsSL https://get.docker.com | sh
+    # ---------- Docker Installation ----------
+    - name: Remove old Docker versions if they exist
+      apt:
+        name:
+          - docker
+          - docker-engine
+          - docker.io
+          - containerd
+          - runc
+        state: absent
 
-    - name: Add user to docker group
+    - name: Install required packages for Docker
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+
+    - name: Add Docker's official GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+
+    - name: Install Docker CE
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: yes
+
+    - name: Start and enable Docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add ubuntu user to docker group
       user:
-        name: "{{ ansible_user }}"
+        name: ubuntu
         groups: docker
         append: yes
 
-    - name: Install Docker Compose plugin
-      apt:
-        name: docker-compose-plugin
-        state: present
+    # ---------- Directory Setup ----------
+    - name: Create application directory
+      file:
+        path: "{{ app_directory }}"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
 
+    - name: Create secrets directory
+      file:
+        path: "{{ app_directory }}/secrets"
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0700'
 
+    # ---------- Application Files ----------
+    - name: Copy docker-compose.yml to server
+      copy:
+        src: ../docker-compose.yml
+        dest: "{{ app_directory }}/docker-compose.yml"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
 
-    # ---------- App Deployment ----------
-    - name: Copy Task Manager App to server
-      synchronize:
-        src: /local/path/to/task-manager/
-        dest: /home/ubuntu/task-manager/
-        recursive: yes
+    - name: Copy database password secret
+      copy:
+        src: ../secrets/db_password.txt
+        dest: "{{ app_directory }}/secrets/db_password.txt"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0600'
 
-    - name: Launch Docker containers
+    # ---------- Docker Login and Pull Images ----------
+    - name: Login to Docker Hub (if credentials are available)
+      shell: |
+        if [ ! -z "$DOCKER_USERNAME" ] && [ ! -z "$DOCKER_PASSWORD" ]; then
+          echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+        fi
+      become_user: ubuntu
+      environment:
+        DOCKER_USERNAME: "{{ docker_username }}"
+        DOCKER_PASSWORD: "{{ lookup('env', 'DOCKER_PASSWORD') | default('') }}"
+      ignore_errors: yes
+
+    - name: Pull Docker images
+      shell: |
+        docker pull {{ docker_username }}/task-manager-backend:latest
+        docker pull {{ docker_username }}/task-manager-frontend:latest
+        docker pull postgres:15-alpine
+      become_user: ubuntu
+      ignore_errors: yes
+
+    # ---------- Application Deployment ----------
+    - name: Stop existing containers (if any)
+      shell: docker compose down
+      args:
+        chdir: "{{ app_directory }}"
+      become_user: ubuntu
+      ignore_errors: yes
+
+    - name: Remove old containers and volumes (cleanup)
+      shell: |
+        docker system prune -f
+        docker volume prune -f
+      become_user: ubuntu
+      ignore_errors: yes
+
+    - name: Start the application with Docker Compose
       shell: docker compose up -d
       args:
-        chdir: /home/ubuntu/task-manager/task-manager/
+        chdir: "{{ app_directory }}"
+      become_user: ubuntu
+      register: compose_result
+
+    - name: Wait for services to be ready
+      wait_for:
+        port: "{{ item }}"
+        host: localhost
+        delay: 10
+        timeout: 120
+      loop:
+        - 80    # Frontend
+        - 5432  # Database (bound to localhost)
+
+    # ---------- Verification ----------
+    - name: Check running containers
+      shell: docker compose ps
+      args:
+        chdir: "{{ app_directory }}"
+      become_user: ubuntu
+      register: container_status
+
+    - name: Display container status
+      debug:
+        var: container_status.stdout_lines
+
+    - name: Test application health
+      uri:
+        url: http://localhost/
+        method: GET
+        status_code: 200
+      register: health_check
+      ignore_errors: yes
+
+    - name: Display deployment result
+      debug:
+        msg: |
+          Deployment completed!
+          {% if health_check.status == 200 %}
+          ✅ Application is running successfully
+          Access your app at: http://{{ ansible_host }}
+          {% else %}
+          ⚠️  Application might still be starting up
+          Check logs with: docker compose logs -f
+          {% endif %}
+
+    # ---------- Security Setup ----------
+    - name: Configure UFW firewall
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - '22'   # SSH
+        - '80'   # HTTP
+        - '443'  # HTTPS (for future SSL)
+
+    - name: Enable UFW firewall
+      ufw:
+        state: enabled
