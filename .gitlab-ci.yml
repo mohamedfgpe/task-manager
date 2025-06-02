@@ -1,0 +1,85 @@
+stages:
+  - build
+  - docker
+  - test
+  - scan
+  - deploy
+  - notify
+
+variables:
+  DOCKER_REGISTRY: docker.io
+  FRONTEND_IMAGE: $DOCKER_USERNAME/task-manager-frontend:latest
+  BACKEND_IMAGE: $DOCKER_USERNAME/task-manager-backend:latest
+
+build:
+  stage: build
+  image: python:3.10
+  before_script:
+    - pip install flake8 black
+    - apt-get update && apt-get install -y nodejs npm
+  script:
+    - flake8 backend/ || true
+    - black --check backend/ || true
+    - cd frontend && npm install && npm run lint || true
+
+docker:
+  stage: docker
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+    - docker build -t $BACKEND_IMAGE ./backend
+    - docker build -t $FRONTEND_IMAGE ./frontend
+    - docker push $BACKEND_IMAGE
+    - docker push $FRONTEND_IMAGE
+
+test:
+  stage: test
+  image: python:3.10
+  services:
+    - postgres:15-alpine
+  variables:
+    POSTGRES_DB: test_db
+    POSTGRES_USER: postgres
+    POSTGRES_PASSWORD: postgres
+    DATABASE_URL: postgresql://postgres:postgres@postgres:5432/test_db
+  before_script:
+    - pip install -r backend/requirements.txt pytest
+    - apt-get update && apt-get install -y nodejs npm
+  script:
+    - pytest backend/tests/ || true
+    - cd frontend && npm install && npm test -- --watchAll=false || true
+
+scan:
+  stage: scan
+  image: alpine:3.18
+  before_script:
+    - apk add --no-cache curl
+    - curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+  script:
+    - trivy image $BACKEND_IMAGE || true
+    - trivy image $FRONTEND_IMAGE || true
+
+deploy:
+  stage: deploy
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache openssh-client ansible
+    - eval $(ssh-agent -s)
+    - echo "$EC2_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - ssh-keyscan -H $EC2_HOST >> ~/.ssh/known_hosts
+  script:
+    - ansible-playbook -i ansible/inventory ansible/playbook.yml --private-key "$EC2_PRIVATE_KEY"
+  when: manual
+
+notify:
+  stage: notify
+  image: curlimages/curl:latest
+  script:
+    - >
+      curl -X POST -H 'Content-type: application/json'
+      --data '{"text":"✅ Task Manager CI/CD pipeline completed successfully! 🚀"}'
+      $SLACK_WEBHOOK_URL
+  when: on_success

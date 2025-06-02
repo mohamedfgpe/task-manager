@@ -1,0 +1,39 @@
+- name: Complete Server Setup and App Deployment
+  hosts: servers
+  become: true
+  tasks:
+
+    # ---------- Common ----------
+    - name: Update and upgrade apt packages
+      apt:
+        update_cache: yes
+        upgrade: dist
+
+    # ---------- Docker ----------
+    - name: Install Docker
+      shell: curl -fsSL https://get.docker.com | sh
+
+    - name: Add user to docker group
+      user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+
+    - name: Install Docker Compose plugin
+      apt:
+        name: docker-compose-plugin
+        state: present
+
+
+
+    # ---------- App Deployment ----------
+    - name: Copy Task Manager App to server
+      synchronize:
+        src: /local/path/to/task-manager/
+        dest: /home/ubuntu/task-manager/
+        recursive: yes
+
+    - name: Launch Docker containers
+      shell: docker compose up -d
+      args:
+        chdir: /home/ubuntu/task-manager/task-manager/
